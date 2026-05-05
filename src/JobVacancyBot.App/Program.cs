@@ -1,6 +1,7 @@
 ﻿using JobVacancyBot.App.Formatting;
 using JobVacancyBot.App.Telegram;
 using JobVacancyBot.Application.Abstractions;
+using JobVacancyBot.Application.UseCases;
 using JobVacancyBot.Infrastructure.VacancySources;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,26 +33,20 @@ ServiceCollection services = new();
 services.AddSingleton<IConfiguration>(configuration);
 
 services.AddSingleton<ITelegramBotClient>(_ => new TelegramBotClient(botToken));
-services.AddSingleton(_ => new TelegramChannelPublisher(
-    _.GetRequiredService<ITelegramBotClient>(),
+
+services.AddSingleton(serviceProvider => new TelegramChannelPublisher(
+    serviceProvider.GetRequiredService<ITelegramBotClient>(),
     channelId));
 
 services.AddScoped<IVacancySource, FakeVacancySource>();
+services.AddScoped<IVacancyPublisher, TelegramVacancyPublisher>();
 services.AddScoped<VacancyMessageFormatter>();
+services.AddScoped<PublishVacanciesUseCase>();
 
 ServiceProvider serviceProvider = services.BuildServiceProvider();
 
-IVacancySource vacancySource = serviceProvider.GetRequiredService<IVacancySource>();
-VacancyMessageFormatter formatter = serviceProvider.GetRequiredService<VacancyMessageFormatter>();
-TelegramChannelPublisher publisher = serviceProvider.GetRequiredService<TelegramChannelPublisher>();
+PublishVacanciesUseCase useCase = serviceProvider.GetRequiredService<PublishVacanciesUseCase>();
 
-IReadOnlyList<JobVacancyBot.Domain.Entities.Vacancy> vacancies =
-    await vacancySource.GetVacanciesAsync(CancellationToken.None);
+await useCase.ExecuteAsync(CancellationToken.None);
 
-JobVacancyBot.Domain.Entities.Vacancy firstVacancy = vacancies[0];
-
-string message = formatter.Format(firstVacancy);
-
-await publisher.PublishAsync(message, CancellationToken.None);
-
-Console.WriteLine("Test vacancy was published to Telegram channel.");
+Console.WriteLine("Vacancies were published to Telegram channel.");
