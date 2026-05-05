@@ -3,6 +3,10 @@ using JobVacancyBot.App.Telegram;
 using JobVacancyBot.Application.Abstractions;
 using JobVacancyBot.Application.UseCases;
 using JobVacancyBot.Infrastructure.VacancySources;
+using JobVacancyBot.Application.Options;
+using JobVacancyBot.Infrastructure.Persistence;
+using JobVacancyBot.Infrastructure.Repositories;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Telegram.Bot;
@@ -31,6 +35,22 @@ if (string.IsNullOrWhiteSpace(channelId))
 ServiceCollection services = new();
 
 services.AddSingleton<IConfiguration>(configuration);
+services.Configure<PublishingOptions>(
+    configuration.GetSection("Publishing"));
+
+string? connectionString = configuration.GetConnectionString("DefaultConnection");
+
+if (string.IsNullOrWhiteSpace(connectionString))
+{
+    Console.WriteLine("DefaultConnection is not configured.");
+    return;
+}
+
+services.AddDbContext<AppDbContext>(options =>
+{
+    options.UseNpgsql(connectionString);
+});
+services.AddScoped<IVacancyRepository, VacancyRepository>();
 
 services.AddSingleton<ITelegramBotClient>(_ => new TelegramBotClient(botToken));
 
@@ -41,12 +61,20 @@ services.AddSingleton(serviceProvider => new TelegramChannelPublisher(
 services.AddScoped<IVacancySource, FakeVacancySource>();
 services.AddScoped<IVacancyPublisher, TelegramVacancyPublisher>();
 services.AddScoped<VacancyMessageFormatter>();
+services.AddScoped<CollectVacanciesUseCase>();
 services.AddScoped<PublishVacanciesUseCase>();
 
 ServiceProvider serviceProvider = services.BuildServiceProvider();
 
-PublishVacanciesUseCase useCase = serviceProvider.GetRequiredService<PublishVacanciesUseCase>();
+CollectVacanciesUseCase collectUseCase =
+    serviceProvider.GetRequiredService<CollectVacanciesUseCase>();
 
-await useCase.ExecuteAsync(CancellationToken.None);
+PublishVacanciesUseCase publishUseCase =
+    serviceProvider.GetRequiredService<PublishVacanciesUseCase>();
 
-Console.WriteLine("Vacancies were published to Telegram channel.");
+int addedCount = await collectUseCase.ExecuteAsync(CancellationToken.None);
+
+int publishedCount = await publishUseCase.ExecuteAsync(CancellationToken.None);
+
+Console.WriteLine($"Added vacancies: {addedCount}");
+Console.WriteLine($"Published vacancies: {publishedCount}");
