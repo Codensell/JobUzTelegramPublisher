@@ -1,14 +1,16 @@
-﻿using JobVacancyBot.App.Formatting;
+﻿using System.Net.Http.Headers;
+using JobVacancyBot.App.Formatting;
 using JobVacancyBot.App.Telegram;
 using JobVacancyBot.Application.Abstractions;
 using JobVacancyBot.Application.UseCases;
-using JobVacancyBot.Infrastructure.VacancySources;
 using JobVacancyBot.Application.Options;
 using JobVacancyBot.Infrastructure.Persistence;
 using JobVacancyBot.Infrastructure.Repositories;
+using JobVacancyBot.Infrastructure.HeadHunter;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Telegram.Bot;
 
 IConfiguration configuration = new ConfigurationBuilder()
@@ -18,17 +20,10 @@ IConfiguration configuration = new ConfigurationBuilder()
     .Build();
 
 string? botToken = configuration["Telegram:BotToken"];
-string? channelId = configuration["Telegram:ChannelId"];
 
 if (string.IsNullOrWhiteSpace(botToken))
 {
     Console.WriteLine("Telegram BotToken is not configured.");
-    return;
-}
-
-if (string.IsNullOrWhiteSpace(channelId))
-{
-    Console.WriteLine("Telegram ChannelId is not configured.");
     return;
 }
 
@@ -37,6 +32,15 @@ ServiceCollection services = new();
 services.AddSingleton<IConfiguration>(configuration);
 services.Configure<PublishingOptions>(
     configuration.GetSection("Publishing"));
+
+services.Configure<HeadHunterOptions>(
+    configuration.GetSection("HeadHunter"));
+
+services.Configure<VacancyCollectorOptions>(
+    configuration.GetSection("VacancyCollector"));
+
+services.Configure<TelegramChannelsOptions>(
+    configuration.GetSection("TelegramChannels"));
 
 string? connectionString = configuration.GetConnectionString("DefaultConnection");
 
@@ -54,27 +58,102 @@ services.AddScoped<IVacancyRepository, VacancyRepository>();
 
 services.AddSingleton<ITelegramBotClient>(_ => new TelegramBotClient(botToken));
 
-services.AddSingleton(serviceProvider => new TelegramChannelPublisher(
-    serviceProvider.GetRequiredService<ITelegramBotClient>(),
-    channelId));
+services.AddSingleton<TelegramChannelPublisher>();
 
-services.AddScoped<IVacancySource, FakeVacancySource>();
+services.AddHttpClient<IVacancySource, HhVacancySource>((serviceProvider, httpClient) =>
+{
+    HeadHunterOptions options = serviceProvider
+        .GetRequiredService<Microsoft.Extensions.Options.IOptions<HeadHunterOptions>>()
+        .Value;
+
+    httpClient.BaseAddress = new Uri(options.BaseUrl);
+    httpClient.DefaultRequestHeaders.Accept.Add(
+        new MediaTypeWithQualityHeaderValue("application/json"));
+    httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(options.UserAgent);
+    httpClient.DefaultRequestHeaders.Add("HH-User-Agent", options.UserAgent);
+
+    if (!string.IsNullOrWhiteSpace(options.AccessToken))
+    {
+        httpClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", options.AccessToken);
+    }
+});
+
 services.AddScoped<IVacancyPublisher, TelegramVacancyPublisher>();
 services.AddScoped<VacancyMessageFormatter>();
 services.AddScoped<CollectVacanciesUseCase>();
 services.AddScoped<PublishVacanciesUseCase>();
 
-ServiceProvider serviceProvider = services.BuildServiceProvider();
+using ServiceProvider serviceProvider = services.BuildServiceProvider();
 
-CollectVacanciesUseCase collectUseCase =
-    serviceProvider.GetRequiredService<CollectVacanciesUseCase>();
+VacancyCollectorOptions collectorOptions = serviceProvider
+    .GetRequiredService<IOptions<VacancyCollectorOptions>>()
+    .Value;
 
-PublishVacanciesUseCase publishUseCase =
-    serviceProvider.GetRequiredService<PublishVacanciesUseCase>();
+TimeSpan collectionInterval = TimeSpan.FromMinutes(
+    collectorOptions.IntervalMinutes > 0
+        ? collectorOptions.IntervalMinutes
+        : 60);
 
-int addedCount = await collectUseCase.ExecuteAsync(CancellationToken.None);
+using CancellationTokenSource shutdownTokenSource = new();
 
-int publishedCount = await publishUseCase.ExecuteAsync(CancellationToken.None);
+Console.CancelKeyPress += (_, eventArgs) =>
+{
+    eventArgs.Cancel = true;
+    shutdownTokenSource.Cancel();
+};
 
-Console.WriteLine($"Added vacancies: {addedCount}");
-Console.WriteLine($"Published vacancies: {publishedCount}");
+Console.WriteLine($"Vacancy collector started. Interval: {collectionInterval.TotalMinutes:N0} minutes.");
+Console.WriteLine("Press Ctrl+C to stop.");
+
+while (!shutdownTokenSource.IsCancellationRequested)
+{
+    await RunCollectorCycleAsync(
+        serviceProvider,
+        shutdownTokenSource.Token);
+
+    try
+    {
+        await Task.Delay(
+            collectionInterval,
+            shutdownTokenSource.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        break;
+    }
+}
+
+Console.WriteLine("Vacancy collector stopped.");
+
+static async Task RunCollectorCycleAsync(
+    IServiceProvider serviceProvider,
+    CancellationToken cancellationToken)
+{
+    try
+    {
+        using IServiceScope scope = serviceProvider.CreateScope();
+
+        CollectVacanciesUseCase collectUseCase =
+            scope.ServiceProvider.GetRequiredService<CollectVacanciesUseCase>();
+
+        PublishVacanciesUseCase publishUseCase =
+            scope.ServiceProvider.GetRequiredService<PublishVacanciesUseCase>();
+
+        Console.WriteLine($"Collector cycle started at {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}.");
+
+        int addedCount = await collectUseCase.ExecuteAsync(cancellationToken);
+
+        int publishedCount = await publishUseCase.ExecuteAsync(cancellationToken);
+
+        Console.WriteLine($"Added vacancies: {addedCount}");
+        Console.WriteLine($"Published vacancies: {publishedCount}");
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    {
+    }
+    catch (Exception exception)
+    {
+        Console.WriteLine($"Collector cycle failed: {exception.Message}");
+    }
+}

@@ -6,5 +6,6 @@ public interface IVacancyPublisher
 {
     Task PublishAsync(
         Vacancy vacancy,
+        string channelId,
         CancellationToken cancellationToken);
 }

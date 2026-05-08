@@ -43,6 +43,37 @@ public sealed class VacancyRepository : IVacancyRepository
             .ToListAsync(cancellationToken);
     }
 
+    public async Task<IReadOnlyList<Vacancy>> GetRecentAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        return await _dbContext.Vacancies
+            .OrderByDescending(vacancy => vacancy.PublishedAt)
+            .Take(limit)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<bool> ExistsPublicationAsync(
+        Guid vacancyId,
+        string channelKey,
+        CancellationToken cancellationToken)
+    {
+        return await _dbContext.VacancyPublications.AnyAsync(
+            publication =>
+                publication.VacancyId == vacancyId &&
+                publication.ChannelKey == channelKey,
+            cancellationToken);
+    }
+
+    public async Task AddPublicationAsync(
+        VacancyPublication publication,
+        CancellationToken cancellationToken)
+    {
+        await _dbContext.VacancyPublications.AddAsync(
+            publication,
+            cancellationToken);
+    }
+
     public async Task SaveChangesAsync(CancellationToken cancellationToken)
     {
         await _dbContext.SaveChangesAsync(cancellationToken);

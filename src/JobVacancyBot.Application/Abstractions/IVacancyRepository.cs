@@ -16,5 +16,18 @@ public interface IVacancyRepository
         int limit,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<Vacancy>> GetRecentAsync(
+        int limit,
+        CancellationToken cancellationToken);
+
+    Task<bool> ExistsPublicationAsync(
+        Guid vacancyId,
+        string channelKey,
+        CancellationToken cancellationToken);
+
+    Task AddPublicationAsync(
+        VacancyPublication publication,
+        CancellationToken cancellationToken);
+
     Task SaveChangesAsync(CancellationToken cancellationToken);
 }

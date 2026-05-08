@@ -19,11 +19,13 @@ public sealed class TelegramVacancyPublisher : IVacancyPublisher
 
     public async Task PublishAsync(
         Vacancy vacancy,
+        string channelId,
         CancellationToken cancellationToken)
     {
         string message = _formatter.Format(vacancy);
 
         await _channelPublisher.PublishAsync(
+            channelId,
             message,
             cancellationToken);
     }
